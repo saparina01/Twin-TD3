@@ -7,6 +7,11 @@ import argparse
 # get argument from user
 parser = argparse.ArgumentParser()
 parser.add_argument('--path', type = str, required = True, help="pretrained model weight path")
+parser.add_argument('--preferences', type=float, nargs='+', default=None, help='MORL rate weights; default 0:0.05:1 (fixed baseline: its trained weight)')
+parser.add_argument('--eval-seeds', type=int, nargs='+', default=None, help='MORL common evaluation seeds; default 1000 1001 1002')
+parser.add_argument('--output-dir', default=None, help='MORL evaluation output directory')
+parser.add_argument('--device', default='cpu', help='MORL torch device')
+parser.add_argument('--threads', type=int, default=1, help='MORL torch CPU threads')
 
 args = parser.parse_args()
 STORE_PATH = args.path
@@ -14,6 +19,14 @@ STORE_PATH = args.path
 # validate the weight path
 if not os.path.isdir(STORE_PATH):
     raise NotImplementedError("The provided weight path does not exist!")
+
+if os.path.isfile(os.path.join(STORE_PATH, 'morl_metadata.json')):
+    os.environ.setdefault('MPLBACKEND', 'Agg')
+    from morl_experiment import evaluate_morl
+    result = evaluate_morl(STORE_PATH, preferences=args.preferences, eval_seeds=args.eval_seeds,
+                          output_dir=args.output_dir, device=args.device, threads=args.threads)
+    print(f'MORL evaluation: {result}')
+    raise SystemExit(0)
 
 # get DRL_ALGO
 if 'td3' in STORE_PATH:

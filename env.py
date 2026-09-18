@@ -8,6 +8,7 @@ from mpl_toolkits import mplot3d
 import matplotlib.pyplot as plt
 from render import Render
 from data_manager import DataManager
+from types import SimpleNamespace
 # s.t every simulition is the same model
 np.random.seed(2)
 
@@ -51,6 +52,29 @@ def get_energy_consumption(v_t):
 ENERGY_MIN = get_energy_consumption(0.25)
 ENERGY_MAX = get_energy_consumption(0)
 
+
+def propulsion_power(speed_mps):
+    """Rotary-wing propulsion power in watts (speed in metres/second).
+
+    This retains the repository's aircraft parameters. The reciprocal form of
+    the induced-power term avoids cancellation at high speeds.
+    """
+    speed = float(speed_mps)
+    if not math.isfinite(speed) or speed < 0:
+        raise ValueError('speed_mps must be finite and non-negative')
+    x = speed ** 2 / (2 * v_0 ** 2)
+    induced = P_i / math.sqrt(math.hypot(1.0, x) + x)
+    return (P_0 * (1 + 3 * speed ** 2 / U2_tip)
+            + 0.5 * d_0 * p * s * A * speed ** 3 + induced)
+
+
+def propulsion_energy(displacement_m, slot_duration_s=0.1):
+    """Energy in joules for an actual displacement during one time slot."""
+    if not math.isfinite(slot_duration_s) or slot_duration_s <= 0:
+        raise ValueError('slot_duration_s must be positive and finite')
+    speed = float(np.linalg.norm(displacement_m)) / slot_duration_s
+    return propulsion_power(speed) * slot_duration_s
+
 ######################################################
 
 
@@ -63,7 +87,21 @@ class MiniSystem(object):
     def __init__(self, UAV_num = 1, RIS_num = 1, user_num = 1, attacker_num = 1, fre = 28e9, \
                  RIS_ant_num = 16, UAV_ant_num=8, if_dir_link = 1, if_with_RIS = True, \
                  if_move_users = True, if_movements = True, reverse_x_y = (True, True), \
-                 if_UAV_pos_state = True, reward_design = 'ssr', project_name = None, step_num=100):
+                 if_UAV_pos_state = True, reward_design = 'ssr', project_name = None, step_num=100,
+                 slot_duration_s=0.1, render_enabled=True, data_dir='./data',
+                 store_path='./data/storage'):
+        if reward_design not in ('ssr', 'see', 'morl'):
+            raise ValueError('reward_design must be ssr, see or morl')
+        if reward_design == 'morl':
+            if not if_movements:
+                raise ValueError('MORL requires displacement actions (if_movements=True)')
+            if step_num <= 0 or int(step_num) != step_num:
+                raise ValueError('step_num must be a positive integer')
+            if user_num < 1 or attacker_num < 1:
+                raise ValueError('MORL requires at least one user and attacker')
+            propulsion_energy([0, 0], slot_duration_s)
+        self.slot_duration_s = float(slot_duration_s)
+        self.elapsed_steps = 0
         self.if_dir_link = if_dir_link
         self.if_with_RIS = if_with_RIS
         self.if_move_users = if_move_users
@@ -74,7 +112,8 @@ class MiniSystem(object):
         self.attacker_num = attacker_num
         self.border = [(-25,25), (0, 50)]
         # 1.init entities: 1 UAV, 1 RIS, many users and attackers
-        self.data_manager = DataManager(file_path='./data', project_name = project_name, \
+        self.data_manager = DataManager(file_path=data_dir, store_path=store_path,
+        cache_locations=(reward_design == 'morl'), project_name = project_name, \
         store_list = ['beamforming_matrix', 'reflecting_coefficient', 'UAV_state', 'user_capacity', 'secure_capacity', 'attaker_capacity','G_power', 'reward','UAV_movement'])
         # 1.1 init UAV position and beamforming matrix
         self.UAV = UAV(
@@ -111,7 +150,13 @@ class MiniSystem(object):
         self.eavesdrop_capacity_array= np.zeros((attacker_num, user_num))
         
         # 1.6 reward design
-        self.reward_design = reward_design # reward_design is ['ssr' or 'see']
+        self.reward_design = reward_design
+        if reward_design == 'morl':
+            for field in ('sum_secrecy_rate', 'propulsion_energy_j', 'speed_mps',
+                          'boundary_projected', 'power_projected', 'action_clipped',
+                          'preference', 'normalized_reward', 'scalar_utility'):
+                self.data_manager.store_list.append(field)
+                self.data_manager.simulation_result_dic[field] = []
 
         # 1.7 step_num
         self.step_num = step_num
@@ -133,7 +178,9 @@ class MiniSystem(object):
         self.update_channel_capacity()
 
         # 4 draw system
-        self.render_obj = Render(self)      
+        self.render_obj = Render(self) if render_enabled else SimpleNamespace(pause=False, t_index=0)
+        if reward_design == 'morl':
+            self._refresh_morl_channels()
         
     def reset(self):
         """
@@ -160,17 +207,23 @@ class MiniSystem(object):
         self.RIS.Phi = np.mat(np.diag(np.ones(self.RIS.ant_num, dtype=complex)), dtype = complex)
         # 6 reset time
         self.render_obj.t_index = 0
+        self.elapsed_steps = 0
         # 7 reset CSI
         self.H_UR.update_CSI()
         for h in self.h_U_k + self.h_U_p + self.h_R_k + self.h_R_p:
             h.update_CSI()
         # 8 reset capcaity
         self.update_channel_capacity()
+        if self.reward_design == 'morl':
+            self._refresh_morl_channels()
+            return self.observe()
 
     def step(self, action_0 = 0, action_1 = 0, G = 0, Phi = 0, set_pos_x = 0, set_pos_y = 0):
         """
         test step only move UAV and update channel
         """
+        if self.reward_design == 'morl':
+            return self._step_morl(action_0, action_1, G, Phi)
         # 0 update render
         
         self.render_obj.t_index += 1
@@ -262,6 +315,77 @@ class MiniSystem(object):
         self.data_manager.store_data([reward],'reward')
         return new_state, reward, done, []
 
+    def _refresh_morl_channels(self):
+        """Apply the same channel switches on reset and on every MORL step."""
+        for h in self.h_U_k + self.h_U_p + self.h_R_k + self.h_R_p:
+            h.update_CSI()
+        if not self.if_dir_link:
+            for h in self.h_U_k + self.h_U_p:
+                h.channel_matrix = np.mat(np.zeros_like(h.channel_matrix))
+        if self.if_with_RIS:
+            self.H_UR.update_CSI()
+        else:
+            self.H_UR.channel_matrix = np.mat(np.zeros((self.RIS.ant_num, self.UAV.ant_num)), dtype=complex)
+        self.update_channel_capacity()
+
+    def _step_morl(self, action_x, action_y, beamforming, phases):
+        if self.elapsed_steps >= self.step_num:
+            raise RuntimeError('Episode finished; call reset() before stepping again')
+        n_beam = 2 * self.UAV.ant_num * self.user_num
+        beam = np.asarray(beamforming, dtype=float).reshape(-1)
+        phase = np.asarray(phases, dtype=float).reshape(-1) if self.if_with_RIS else np.empty(0)
+        if beam.size != n_beam or (self.if_with_RIS and phase.size != self.RIS.ant_num):
+            raise ValueError('Incorrect beamforming or RIS action dimension')
+        commands = np.concatenate(([action_x, action_y], beam, phase))
+        if not np.all(np.isfinite(commands)):
+            raise ValueError('Actions must be finite')
+        bounded = np.clip(commands, -1.0, 1.0)
+        action_clipped = bool(np.any(commands != bounded))
+        old_position = self.UAV.coordinate.copy()
+        movement = bounded[:2] * self.UAV.max_movement_per_time_slot
+        movement *= np.where(self.reverse_x_y, -1.0, 1.0)
+        requested = old_position[:2] + movement
+        projected = np.clip(requested, [b[0] for b in self.border], [b[1] for b in self.border])
+        boundary_projected = bool(np.any(requested != projected))
+        self.UAV.coordinate = old_position.astype(float, copy=True)
+        self.UAV.coordinate[:2] = projected
+        actual_movement = self.UAV.coordinate[:2] - old_position[:2]
+
+        if self.if_move_users:
+            for user in self.user_list:
+                user.update_coordinate(0.2, -math.pi / 2)
+        self.UAV.G = convert_list_to_complex_matrix(bounded[2:2+n_beam],
+                            (self.UAV.ant_num, self.user_num)) * math.sqrt(self.power_factor)
+        requested_power = float(np.real(np.trace(self.UAV.G * self.UAV.G.H)))
+        power_limit = float(abs(self.UAV.G_Pmax))
+        power_projected = requested_power > power_limit
+        if power_projected:
+            self.UAV.G *= math.sqrt(power_limit / requested_power)
+        if self.if_with_RIS:
+            self.RIS.Phi = convert_list_to_complex_diag(bounded[2+n_beam:], self.RIS.ant_num)
+        self.elapsed_steps += 1
+        self.render_obj.t_index = self.elapsed_steps
+        self._refresh_morl_channels()
+
+        rate = float(np.sum([user.secure_capacity for user in self.user_list]))
+        speed = float(np.linalg.norm(actual_movement)) / self.slot_duration_s
+        energy = propulsion_energy(actual_movement, self.slot_duration_s)
+        reward = np.array([rate, -energy], dtype=np.float64)
+        info = dict(sum_secrecy_rate=rate, propulsion_energy_j=energy, speed_mps=speed,
+                    boundary_projected=boundary_projected, power_projected=power_projected,
+                    action_clipped=action_clipped)
+        self.store_current_system_sate()
+        self.data_manager.store_data(actual_movement.tolist(), 'UAV_movement')
+        self.data_manager.store_data(reward.tolist(), 'reward')
+        for key, value in info.items():
+            self.data_manager.store_data([value], key)
+        return self.observe(), reward, self.elapsed_steps == self.step_num, info
+
+    def _capacity_from_sinr(self, sinr):
+        # Legacy checkpoints retain their original log10-based environment.
+        logarithm = math.log2 if self.reward_design == 'morl' else math.log10
+        return logarithm(1 + abs(float(sinr)))
+
     def reward(self):
         """
         used in function step to get the reward of current step
@@ -298,7 +422,10 @@ class MiniSystem(object):
         if self.if_UAV_pos_state:
             UAV_position_list = list(self.UAV.coordinate)
 
-        return comprehensive_channel_elements_list + UAV_position_list
+        state = comprehensive_channel_elements_list + UAV_position_list
+        if self.reward_design == 'morl':
+            state.append(1.0 - self.elapsed_steps / self.step_num)
+        return state
 
     def store_current_system_sate(self):
         """
@@ -392,7 +519,7 @@ class MiniSystem(object):
             G_k_ = np.hstack((G_k_1, G_k_2))
         alpha_k = math.pow(abs((h_U_k.H + Psi.H * H_c) * G_k), 2)
         beta_k = math.pow(np.linalg.norm((h_U_k.H + Psi.H * H_c)*G_k_), 2) + dB_to_normal(noise_power) * 1e-3
-        return math.log10(1 + abs(alpha_k / beta_k))
+        return self._capacity_from_sinr(alpha_k / beta_k)
 
     def calculate_capacity_array_of_attacker_p(self, p):
         """
@@ -410,7 +537,7 @@ class MiniSystem(object):
             G_k_ = np.mat(np.zeros((self.UAV.ant_num, 1), dtype=complex), dtype=complex)
             alpha_p = math.pow(abs((h_U_p.H + Psi.H * H_c) * G_k), 2)
             beta_p = math.pow(np.linalg.norm((h_U_p.H + Psi.H * H_c)*G_k_), 2) + dB_to_normal(noise_power) * 1e-3
-            return np.array([math.log10(1 + abs(alpha_p / beta_p))])
+            return np.array([self._capacity_from_sinr(alpha_p / beta_p)])
         else:
             result = np.zeros(K)
             for k in range(K):
@@ -420,7 +547,7 @@ class MiniSystem(object):
                 G_k_ = np.hstack((G_k_1, G_k_2))
                 alpha_p = math.pow(abs((h_U_p.H + Psi.H * H_c) * G_k), 2)
                 beta_p = math.pow(np.linalg.norm((h_U_p.H + Psi.H * H_c)*G_k_), 2) + dB_to_normal(noise_power) * 1e-3
-                result[k] = math.log10(1 + abs(alpha_p / beta_p))
+                result[k] = self._capacity_from_sinr(alpha_p / beta_p)
             return result
 
     def calculate_secure_capacity_of_user_k(self, k=2):
@@ -459,4 +586,6 @@ class MiniSystem(object):
         # UAV position
         if self.if_UAV_pos_state:
             result += 3
+        if self.reward_design == 'morl':
+            result += 1
         return result

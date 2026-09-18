@@ -21,6 +21,19 @@ args = parser.parse_args()
 STORE_PATH = args.path
 EP_NUM = args.ep_num
 
+if STORE_PATH and (os.path.isfile(os.path.join(STORE_PATH, 'morl_metadata.json'))
+                   or os.path.isfile(os.path.join(STORE_PATH, 'evaluation_config.json'))):
+    from pathlib import Path
+    from morl_plot import plot_training, plot_evaluation
+    path = Path(STORE_PATH)
+    if (path / 'morl_metadata.json').is_file():
+        plot_training(path)
+        for evaluation in path.glob('evaluation*/evaluation_config.json'):
+            plot_evaluation(evaluation.parent)
+    else:
+        plot_evaluation(path)
+    raise SystemExit(0)
+
 
 ######################################################
 # new for energy 

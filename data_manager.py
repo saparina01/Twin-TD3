@@ -10,10 +10,11 @@ class DataManager(object):
     before use, please create a direction under current file path './data'
     and must have a file 'init_location.xlsx' which contain the position of each entities
     """
-    def __init__(self, store_list = ['beamforming_matrix', 'reflecting_coefficient', 'UAV_state', 'user_capacity'],file_path = './data', store_path = './data/storage', project_name = None):
+    def __init__(self, store_list = ['beamforming_matrix', 'reflecting_coefficient', 'UAV_state', 'user_capacity'],file_path = './data', store_path = './data/storage', project_name = None, cache_locations=False):
         # 1 init location data
-        self.store_list = store_list
+        self.store_list = list(store_list)
         self.init_data_file = file_path + '/init_location.xlsx'
+        self._locations = pd.read_excel(self.init_data_file, sheet_name=None) if cache_locations else None
         if project_name is None:
             self.time_stemp = time.strftime('/%Y-%m-%d %H_%M_%S',time.localtime(time.time()))
             self.store_path = store_path + self.time_stemp 
@@ -56,6 +57,8 @@ class DataManager(object):
             self.simulation_result_dic.update({store_item:[]})
 
     def read_init_location(self, entity_type = 'user', index = 0):
+        if self._locations is not None:
+            return self._locations[entity_type].loc[index, ['x', 'y', 'z']].to_numpy(dtype=float, copy=True)
         if entity_type == 'user' or 'attacker' or 'RIS' or 'RIS_norm_vec' or 'UAV':
             return np.array([\
             pd.read_excel(self.init_data_file, sheet_name=entity_type)['x'][index],\

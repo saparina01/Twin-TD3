@@ -1,188 +1,129 @@
 # Deep Reinforcement Learning for Secrecy Energy-Efficient UAV Communication with Reconfigurable Intelligent Surfaces
 
-**IEEE Wireless Communications and Networking Conference 2023 (WCNC 2023)** </br>
-Simulation for Conference Proceedings https://doi.org/10.1109/WCNC55385.2023.10118891 </br>
-Refer [this link](https://github.com/yjwong1999/Twin-TD3/blob/main/WCNC2023%20WS-09%20%231570879488.pdf) for the preprint
+## Preference-conditioned MORL extension
 
-## Abstract
-This paper investigates the **physical layer security (PLS)** issue in **reconfigurable intelligent surface (RIS) aided millimeter-wave rotary-wing unmanned aerial vehicle (UAV) communications** under the presence of multiple eavesdroppers and imperfect channel state information (CSI). The goal is to maximize the **worst-case secrecy energy efficiency (SEE)** of UAV via a **joint optimization of flight trajectory, UAV active beamforming and RIS passive beamforming**. By interacting with the dynamically changing UAV environment, real-time decision making per time slot is possible via deep reinforcement learning (DRL). To decouple the continuous optimization variables, we introduce a **twin twin-delayed deep deterministic policy gradient (TTD3)** to maximize the expected cumulative reward, which is linked to SEE enhancement. Simulation results confirm that the proposed method achieves greater secrecy energy savings than the traditional twin-deep deterministic policy gradient DRL (TDDRL)-based method. 
+The new `morl_td3` mode retains two independent agents: one controls UAV
+beamforming/RIS phases, and the other controls the UAV trajectory. Both receive
+the same preference `[lambda, 1-lambda]` and the same vector reward
+`[sum_secrecy_rate, -propulsion_energy_j]`. Each agent has two vector critics,
+each with two outputs. The original `td3`/`ddpg` SSR/SEE commands and checkpoints
+retain their legacy behaviour.
 
-## TLDR
+### Train and evaluate
 
-### System model: 
-**RIS-aided mmWave UAV system** under the presence of **eavesdroppers** and **imperfect channel state information (CSI)** </br>
+Run these commands from the repository directory with the project's Python
+environment (Python 3.10, NumPy < 2, PyTorch). On this Windows installation it is
+available through `conda activate Twin-TD3`.
 
-### Solution: 
-A **Twin-TD3 (TTD3) algorithm** to decouple the joint optimization of:
-1. UAV active beamforming and RIS passive beamforming 
-2. UAV flight trajectory
+```powershell
+# Sample preferences once per episode: 10% lambda=0, 10% lambda=1, 80% uniform.
+python main_train.py --drl morl_td3 --reward morl --ep-num 300 --seeds 0
 
-We adopt **double DRL framework**, where the 1st and 2nd agent provides the policy for task (1) and (2), respectively.
+# Fixed-preference baselines use exactly the same environment and learner.
+python main_train.py --drl morl_td3 --reward morl --ep-num 300 --seeds 0 --preference 0
+python main_train.py --drl morl_td3 --reward morl --ep-num 300 --seeds 0 --preference 0.5
+python main_train.py --drl morl_td3 --reward morl --ep-num 300 --seeds 0 --preference 1
 
-## How to use this repo
+# Evaluate a sampled model at 21 preferences with common seeds 1000,1001,1002.
+# Use the actual run folder printed by training; repeated names receive suffixes.
+python run_simulation.py --path data/storage/morl/sampled_seed_0
 
-Setup the repo
-```
-conda create --name <env> python=3.10.4
-conda activate <env>
-git clone https://github.com/yjwong1999/Twin-TD3.git
-cd Twin-TD3
-pip install -r requirements.txt
-```
-
-User can train two types of algorithm for training:
-1. Twin DDPG is [TDDRL algorithm](https://doi.org/10.1109/LWC.2021.3081464)
-2. Twin TD3 is our proposed TTD3 algorithm
-
-Run the following  in the `bash` or `powershell`
-
-`main_train.py` is the main python file to train the DRL algorithms
-```shell
-# To use Twin DDPG with SSR as optimization goal
-python3 main_train.py --drl ddpg --reward ssr
-
-# To use Twin TD3 with SSR as optimization goal
-python3 main_train.py --drl td3 --reward ssr
-
-# To use Twin DDPG with SEE as optimization goal
-python3 main_train.py --drl ddpg --reward see
-
-# To use Twin TD3 with SEE as optimization goal
-python3 main_train.py --drl td3 --reward see
-
-
-
-# To use pretrained DRL for UAV trajectory (recommended for stable convergence)
-python3 main_train.py --drl td3 --reward see --trained-uav
-
-# To set number of episodes (default is 300)
-python3 main_train.py --drl td3 --reward see --ep-num 300
-
-# To set seeds for DRL weight initialization (not recommended)
-python3 main_train.py --drl td3 --reward see --seeds 0       # weights of both DRL are initialized with seed 0
-python3 main_train.py --drl td3 --reward see --seeds 0 1     # weights of DRL 1 and DRL2 are initialized with seed 0 and 1, respectively
+# Evaluate a selected grid or regenerate plots without running the model.
+python run_simulation.py --path data/storage/morl/sampled_seed_0 --preferences 0 0.5 1 --eval-seeds 1000 1001 1002
+python load_and_plot.py --path data/storage/morl/sampled_seed_0
 ```
 
-`run_simulation.py` is the python file to run the simulation using your trained models
-```shell
-# plot everything for each episode
-python3 run_simulation.py --path data/storage/scratch/<DIR>       # if you train the algorithm without the pretrained uav
-python3 run_simulation.py --path data/storage/trained_uav/<DIR>   # if you train the algorithm with the pretrained uav
+`--seeds` accepts one seed for both networks/environment or two network seeds
+(the first also seeds the environment and preference/observation streams).
+MORL defaults to seed 0, CPU and one PyTorch thread; use `--device cuda:0` and/or
+`--threads` to change execution. `--trained-uav` is rejected for MORL because
+legacy network input/output dimensions and reward semantics differ. The two
+agents train together; the trajectory policy is never frozen in this mode.
+
+Optional MORL training arguments are `--output-dir`, `--step-num` (100),
+`--slot-duration` (0.1 seconds), `--rate-ref` (10 bits/s/Hz), `--energy-ref`
+(one slot of hovering energy), and `--observation-noise-std` (6e-8). Normalization
+scales are fixed during training and restored from metadata at evaluation.
+Checkpoints are saved every ten episodes and at completion. They contain all
+online/target networks and optimizer states; this first version supports model
+loading for evaluation, **not exact interrupted-training resumption** (replay
+contents/RNG progress are not saved).
+
+### Physical and learning semantics
+
+- MORL capacities use `log2(1+SINR)` in bits/s/Hz; secrecy is summed over users
+  after subtracting the strongest eavesdropper and taking the positive part.
+  There is no positive per-user secrecy-rate threshold in this version.
+- The environment records actual displacement, computes speed as distance / slot
+  duration and propulsion energy as power × duration in joules. Aircraft
+  parameters are inherited from the original repository; communication,
+  amplifier, circuit and RIS power are not included in this energy objective.
+- Commands are clipped to `[-1,1]`. Each horizontal axis permits 0.25 m per
+  step (maximum diagonal speed is approximately 3.536 m/s at the default slot
+  duration). Positions are projected to the flight box and beamforming power
+  is projected to its existing limit; RIS coefficients remain unit magnitude.
+- Each episode lasts exactly 100 steps by default (10 seconds). Boundary requests
+  do not terminate the task early. Energy uses the projected, actual movement.
+  Both observations include remaining-time fraction, and gamma is 1. Terminal
+  Bellman targets contain immediate rewards only.
+- Replay stores raw vector rewards and the original preference. Critic targets
+  select the **whole vector** from the target critic with the lower weighted
+  value. Actor loss is `-mean(sum(w * Q1(s, actor(s,w), w)))`.
+- Target action noise is independent per sample/action, standard deviation 0.2,
+  clipped at ±0.5; target actions are bounded. Actor/target updates occur every
+  two critic updates. No preference relabelling or centralized critic is used.
+- CSI noise is applied on both reset and subsequent observations, using a
+  separate random stream. Coordinates and time are exact. Action exploration
+  is disabled during evaluation, while the saved CSI observation-noise model
+  remains active. The inherited channel and user trajectories are otherwise
+  deterministic; evaluation seeds do not create different physical layouts.
+
+The MORL physics fixes are opt-in. Legacy SSR/SEE retain their original log10
+and energy code paths for reproducibility. Published legacy numbers must not be
+treated as directly comparable with these corrected MORL metrics. The new
+sampled/fixed-preference comparison uses the same corrected environment.
+
+### Outputs and experiments
+
+Each run contains `morl_metadata.json`, a snapshot of the initial coordinates in
+`inputs/`, `communication.pt`, `trajectory.pt`, per-episode `.mat` logs and
+`training_summary.csv`. MAT logs include named fields `reward`, `preference`,
+`normalized_reward`, `scalar_utility`, `sum_secrecy_rate`, `propulsion_energy_j`,
+`speed_mps`, and projection flags, along with the existing radio/trajectory data.
+
+Evaluation creates a separate `evaluation` folder (suffix added if needed) with
+`evaluation_config.json`, `evaluation_steps.csv`, `evaluation_episodes.csv`,
+`evaluation_summary.csv`, per-episode MAT logs, `pareto.png`, and
+`trajectories.png`. The energy totals and plots read named environment metrics;
+they do not recompute a different energy model. The default grid for a fixed
+baseline is its training preference only. Non-dominance maximizes rate and
+minimizes energy, using per-preference means; this is an empirical set, not a
+claim of complete or statistically certified Pareto coverage.
+
+```powershell
+# Three training seeds × (one sampled model + three fixed baselines).
+# A new output directory is required. Each model receives the same step budget.
+python morl_benchmark.py --ep-num 300 --seeds 0 1 2 --output-dir data/storage/morl/benchmark
+
+# Short operational check; results do not establish algorithm performance.
+python morl_benchmark.py --ep-num 3 --seeds 0 1 2 --preferences 0 0.5 1 --eval-seeds 1000 --output-dir data/storage/morl/smoke_comparison
+
+# Compare existing evaluation folders; include at least three training seeds
+# per method for a research comparison. All settings/budgets must match.
+python morl_plot.py --paths RUN_A/evaluation RUN_B/evaluation RUN_C/evaluation --output-dir data/storage/morl/comparison
+
+python -W ignore::PendingDeprecationWarning -m unittest discover -s tests -v
 ```
 
+Comparison first averages repeated evaluations within each trained model, then
+computes standard deviations across training seeds. It emits per-model CSV,
+`comparison_summary.csv`, `matched_utility.csv` (sampled minus fixed utility at
+matched preferences/seeds), `comparison.png`, and `comparison_report.md` with
+preference-sensitivity diagnostics. Small rate/energy spans require examining
+conflict strength, scaling and training coverage; successful execution alone
+does not demonstrate MORL superiority. A complete sweep costs more interactions
+than any one baseline; report both per-model and total training budgets.
 
-`load_and_plot.py` is the python file to plot the (i) Rewards, (ii) Sum Secrecy Rate (SSR), (iii) Secrecy Energy Efficient (SEE), (iv) UAV Trajectory, (v) RIS configs for each episode in one experiments. The plotted figures are saved at `data/storage/scratch/<DIR>/plot` or `data/storage/trained_uav/<DIR>plot`
-```shell
-# plot everything for each episode
-python3 load_and_plot.py --path data/storage/scratch/<DIR> --ep-num 300       # if you train the algorithm without the pretrained uav
-python3 load_and_plot.py --path data/storage/trained_uav/<DIR> --ep-num 300   # if you train the algorithm with the pretrained uav
-```
-
-Note that you can use the bash script `batch_train.sh` and `batch_eval.sh` to train the algorithms and evaluate them using the previous two python codes
-```shell
-# To train on batch
-bash batch_train.sh
-
-# To evaluate on batch
-bash batch_eval.sh
-```
-
-## Results
-
-We run the ```main_train.py``` for 5 times for each settings below, and averaged out the performance
-
-SSR and SEE              (the higher the better)
-Total Energy Consumption (the lower the better)
-
-| Algorithms                     | SSR (bits/s/Hz)| Energy (kJ) | SEE (bits/s/Hz/kJ)|
-|--------------------------------|----------------|-------------|-------------------|
-| TDDRL                          | 5.03           | 12.4        | 40.8              |
-| TTD3                           | 6.05           | 12.7        | 48.2              |
-| TDDRL (with energy constraint) | 4.68           | 11.2        | 39.4              |
-| TTD3  (with energy constraint) | 5.39           | 11.2        | 48.4              |
-
-Summary
-1. In terms of SSR, TTD3 outperforms TDDRL with or without energy constraint
-2. In terms of SEE and Energy, TTD3 (with energy constraint) outperforms all other algorithms
-3. Generally, TTD3 algorithm are better than TTDRL
-4. Even with energy contraint (trade-off between energy consumption and SSR), TTD3 outperforms TDDRL in all aspects
-
-\* Remarks: </br>
-Note that the performance of DRL (especially twin DRL) has a big variation, sometimes you may get extremely good (or bad) performance </br>
-The above benchmark results are averaged performance of several experiments, to get a more holistic understandings on the algorithms </br>
-It is advised to use the benchmark UAV models we trained, for better convergence. </br>
-This approach is consistent with the codes provided by [TDDRL](https://github.com/Brook1711/WCL-pulish-code)
-
-## References and Acknowledgement
-
-This work was supported by the **British Council** under **UK-ASEAN Institutional Links Early Career Researchers Scheme** with project number 913030644.
-
-Both **RIS Simulation** and the **System Model** for this Research Project are based the research work provided by [Brook1711](https://github.com/Brook1711). </br>
-We intended to fork the original repo for the system model (as stated below) as the base of this project. </br>
-However, GitHub does not allow a forked repo to be private. </br>
-Hence, we could not maintain our code based a forked version of the original repo, while keeping it private until the project is completed.
-We would like to express our utmost gratitude for [Brook1711](https://github.com/Brook1711) and his co-authors for their research work.
-
-### RIS Simulation
-RIS Simulation is based on the following research work: </br>
-[SimRIS Channel Simulator for Reconfigurable Intelligent Surface-Empowered Communication Systems](https://ieeexplore.ieee.org/document/9282349) </br>
-The original simulation code is coded in matlab, this [GitHub repo](https://github.com/Brook1711/RIS_components) provides a Python version of the simulation.
-
-### System Model: RIS-aided mmWave UAV communications
-The simulation of the System Model is provided by the following research work: </br>
-[Learning-Based Robust and Secure Transmission for Reconfigurable Intelligent Surface Aided Millimeter Wave UAV Communications](https://doi.org/10.1109/LWC.2021.3081464) </br>
-The code is provided in this [GitHub repo](https://github.com/Brook1711/WCL-pulish-code).
-
-### Rotary-Wing UAV
-We can derive the Rotary-Wing UAV’s propulsion energy consumption based on the following research work: </br>
-[Energy Minimization in Internet-of-Things System Based on Rotary-Wing UAV](https://doi.org/10.1109/LWC.2019.2916549)
-
-### TD3
-Main reference for TD3 implementation: </br>
-[PyTorch/TensorFlow 2.0 for TD3](https://github.com/philtabor/Actor-Critic-Methods-Paper-To-Code/tree/master/TD3)
-
-
-## TODO
-- [x] Add argparse arguments to set drl algo and reward type
-- [x] Add argparse arguments to set episode number
-- [x] Add argparse arguments to set seeds for the two DRLs
-- [x] Add argparse arguments to load pretrained DRL for UAV trajectory
-- [x] Add benchmark/pretrained model
-- [x] Project naming (use <DRL>_<Reward>_<Num> instead of using datetime format)
-- [x] Remove saving "best model", there are no best model, only latest model
-- [ ] The following codes can be used, but you have to manually change the filepath in the codes
-
-`plot_ssr.py` is the python file to plot the final episode's SSR for the 4 benchmarks in the paper
-```shell
-# plot ssr
-python3 plot_ssr.py
-```
-
-`plot_see.py` is the python file to plot the final episode's SSR for the 4 benchmarks in the paper
-```shell
-# plot see
-python3 plot_see.py
-```
-
-`plot_traj.py` is the python file to plot the final episode's UAV trajectory for the 4 benchmarks in the paper
-```shell
-# plot UAV trajectory
-python3 plot_traj.py
-```
-
-## Cite this repository
-```
-@INPROCEEDINGS{10118891,
-  author={Tham, Mau-Luen and Wong, Yi Jie and Iqbal, Amjad and Ramli, Nordin Bin and Zhu, Yongxu and Dagiuklas, Tasos},
-  booktitle={2023 IEEE Wireless Communications and Networking Conference (WCNC)}, 
-  title={Deep Reinforcement Learning for Secrecy Energy- Efficient UAV Communication with Reconfigurable Intelligent Surface}, 
-  year={2023},
-  doi={10.1109/WCNC55385.2023.10118891}}
-```
-
-<details>
-<summary>Star History</summary>
-  
-[![Star History Chart](https://api.star-history.com/svg?repos=yjwong1999/Twin-TD3&type=Date)](https://star-history.com/#yjwong1999/Twin-TD3&Date)
-
-</details>
+Implementation: `env.py` contains the MORL environment path; `morl_td3.py` the
+networks/replay/update rules; `morl_experiment.py` training and evaluation;
+`morl_plot.py` plotting/comparison; `morl_benchmark.py` the seed experiment.

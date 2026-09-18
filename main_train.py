@@ -6,11 +6,20 @@ import argparse
 
 # get argument from user
 parser = argparse.ArgumentParser()
-parser.add_argument('--drl', type = str, required = True, default='td3', help="which drl algo would you like to choose ['ddpg', 'td3']")
-parser.add_argument('--reward', type = str, required = True, default='see', help="which reward would you like to implement ['ssr', 'see']")
+parser.add_argument('--drl', type = str, required = True, default='td3', help="algorithm: ddpg, td3, morl_td3")
+parser.add_argument('--reward', type = str, required = True, default='see', help="reward: ssr, see, morl")
 parser.add_argument('--seeds', type = int, required = False, default=None,  nargs='+', help="what seed(s) would you like to use for DRL 1 and 2, please provide in one or two int")
 parser.add_argument('--ep-num', type = int, required = False, default=300, help="how many episodes do you want to train your DRL")
 parser.add_argument('--trained-uav', default=False, action='store_true', help='use trained uav instead of retraining')
+parser.add_argument('--preference', type=float, default=None, help='MORL: fixed rate weight in [0,1]; omitted samples preferences')
+parser.add_argument('--step-num', type=int, default=100, help='steps per episode')
+parser.add_argument('--slot-duration', type=float, default=0.1, help='MORL slot duration in seconds')
+parser.add_argument('--rate-ref', type=float, default=10.0, help='MORL rate normalization scale in bits/s/Hz')
+parser.add_argument('--energy-ref', type=float, default=None, help='MORL energy scale in J; defaults to hovering for one slot')
+parser.add_argument('--observation-noise-std', type=float, default=6e-8, help='MORL CSI observation noise standard deviation')
+parser.add_argument('--output-dir', default=None, help='MORL output folder; a suffix is added if it exists')
+parser.add_argument('--device', default='cpu', help='MORL torch device, e.g. cpu or cuda:0')
+parser.add_argument('--threads', type=int, default=1, help='MORL CPU torch threads')
 
 args = parser.parse_args()
 DRL_ALGO = args.drl
@@ -18,6 +27,19 @@ REWARD_DESIGN = args.reward
 SEEDS = args.seeds
 EPISODE_NUM = args.ep_num
 TRAINED_UAV = args.trained_uav
+
+if DRL_ALGO == 'morl_td3':
+    if REWARD_DESIGN != 'morl' or TRAINED_UAV:
+        parser.error('morl_td3 requires --reward morl and does not support --trained-uav')
+    os.environ.setdefault('MPLBACKEND', 'Agg')
+    from morl_experiment import train_morl
+    train_morl(episodes=EPISODE_NUM, seeds=SEEDS, preference=args.preference,
+               step_num=args.step_num, slot_duration_s=args.slot_duration,
+               rate_ref=args.rate_ref, energy_ref=args.energy_ref, output_dir=args.output_dir,
+               observation_noise_std=args.observation_noise_std, device=args.device, threads=args.threads)
+    raise SystemExit(0)
+if REWARD_DESIGN == 'morl' or args.preference is not None:
+    parser.error('--reward morl / --preference requires --drl morl_td3')
 
 # process the argument
 assert DRL_ALGO in ['ddpg', 'td3'], "drl must be ['ddpg', 'td3']"
@@ -40,7 +62,7 @@ import torch
 # 1 init system model
 episode_num = EPISODE_NUM # recommend to be 300
 episode_cnt = 0
-step_num = 100
+step_num = args.step_num
 
 project_name = f'trained_uav/{DRL_ALGO}_{REWARD_DESIGN}' if TRAINED_UAV else f'scratch/{DRL_ALGO}_{REWARD_DESIGN}'
 

@@ -1,6 +1,9 @@
 # Twin-TD3 requirements
 # Usage: pip install -r requirements.txt
 
+# The inherited radio/channel model uses np.mat (removed in NumPy 2).
+numpy>=1.21,<2
+
 matplotlib==3.5.3
 pyparsing==3.0.9
 # sklearn==0.0.post1
